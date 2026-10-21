@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pixelsphere</title>
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{color-scheme:dark}
+body{font-family:'Inter',system-ui,sans-serif;background:#07090e;color:#f1f5f9}
+.font-mono{font-family:'JetBrains Mono',ui-monospace,monospace}
+.grid-bg{background-image:linear-gradient(to right,rgba(255,255,255,.03) 1px,transparent 1px),linear-gradient(to bottom,rgba(255,255,255,.03) 1px,transparent 1px);background-size:32px 32px}
+.glass{background:rgba(15,23,42,.65);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,.08)}
+.nav{background:rgba(7,9,14,.85);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px)}
+.inp{width:100%;padding:.6rem .75rem;background:rgba(15,23,42,.9);border:1px solid #1e293b;border-radius:.75rem;font-size:.875rem;color:#e2e8f0;outline:none}
+.inp:focus{border-color:rgba(6,182,212,.6);box-shadow:0 0 0 1px rgba(6,182,212,.6)}
+.btn{padding:.65rem 1rem;border-radius:.75rem;font-weight:500;font-size:.875rem;color:#fff;background:linear-gradient(90deg,#9333ea,#06b6d4)}
+.btn:hover{opacity:.9}.btn:disabled{opacity:.5}
+.ghost{padding:.5rem .9rem;border-radius:.75rem;font-size:.8rem;border:1px solid #334155;color:#cbd5e1}
+.ghost:hover{background:rgba(51,65,85,.4)}
+</style>
+</head>
+<body class="grid-bg min-h-screen antialiased">
+<div id="app"></div>
+<div id="toast" class="fixed left-1/2 -translate-x-1/2 bottom-24 md:bottom-8 z-50 px-4 py-2 rounded-xl text-xs font-mono glass hidden"></div>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let me=null, view='feed', mode='login', pendingImg=null, draftAvatar=null;
+const defLogo={start:'#7928ca',end:'#00dfd8'};
+
+function toast(t){const e=$('#toast');e.textContent=t;e.classList.remove('hidden');clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.add('hidden'),2600)}
+async function api(method,path,body){
+  const r=await fetch(path,{method,headers:{'Content-Type':'application/json'},body:method==='GET'?undefined:JSON.stringify(body||{})});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok){if(r.status===401&&me){me=null;render()}throw new Error(d.error||'Request failed')}
+  return d;
+}
+/* ---------- images (resized in the browser, stored as JPEG on the server) ---------- */
+function loadImg(file){return new Promise((res,rej)=>{const u=URL.createObjectURL(file),i=new Image();i.onload=()=>{URL.revokeObjectURL(u);res(i)};i.onerror=rej;i.src=u})}
+async function squareAvatar(f){const i=await loadImg(f),s=Math.min(i.width,i.height),c=document.createElement('canvas');c.width=c.height=256;c.getContext('2d').drawImage(i,(i.width-s)/2,(i.height-s)/2,s,s,0,0,256,256);return c.toDataURL('image/jpeg',.88)}
+async function fitImage(f,max=1440){const i=await loadImg(f),r=Math.min(1,max/Math.max(i.width,i.height)),c=document.createElement('canvas');c.width=Math.round(i.width*r);c.height=Math.round(i.height*r);c.getContext('2d').drawImage(i,0,0,c.width,c.height);return c.toDataURL('image/jpeg',.85)}
+/* ---------- helpers ---------- */
+const ago=t=>{const s=(Date.now()-t)/1e3;if(s<60)return'just now';if(s<3600)return Math.floor(s/60)+'m ago';if(s<86400)return Math.floor(s/3600)+'h ago';return Math.floor(s/86400)+'d ago'};
+const av=(u,cls='w-9 h-9 rounded-xl')=>u&&u.avatar?`<img src="${esc(u.avatar)}" class="${cls} object-cover ring-1 ring-cyan-500/40" alt="">`:
+ `<div class="${cls} flex items-center justify-center font-bold text-white bg-gradient-to-br from-purple-600 to-cyan-500">${esc((u?.name||u?.username||'?')[0].toUpperCase())}</div>`;
+const logo=(c,cls='w-10 h-10')=>`<svg viewBox="0 0 100 100" class="${cls}"><defs><linearGradient id="g${cls.length}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${c.start}"/><stop offset="1" stop-color="${c.end}"/></linearGradient></defs><rect x="10" y="10" width="80" height="80" rx="22" fill="none" stroke="url(#g${cls.length})" stroke-width="7"/><circle cx="50" cy="50" r="18" fill="none" stroke="url(#g${cls.length})" stroke-width="6" stroke-dasharray="12 4"/><circle cx="72" cy="28" r="5" fill="${c.end}"/></svg>`;
+
+/* ---------- auth ---------- */
+async function submitAuth(e){
+  e.preventDefault();const err=$('#a-err'),btn=$('#a-btn');err.textContent='';
+  const su=mode==='signup',pw=$('#a-pw').value;
+  if(su&&pw!==$('#a-pw2').value){err.textContent='Passwords don’t match.';return}
+  btn.disabled=true;
+  try{const d=await api('POST','/api/'+mode,{username:$('#a-user').value.trim(),password:pw});me=d.me;view='feed';render()}
+  catch(x){err.textContent=x.message}finally{btn.disabled=false}
+}
+async function logout(){try{await api('POST','/api/logout')}catch(e){}me=null;mode='login';render()}
+function authView(){
+  const su=mode==='signup';
+  $('#app').innerHTML=`<div class="min-h-screen flex items-center justify-center p-4"><div class="glass rounded-2xl p-6 w-full max-w-sm space-y-5 shadow-2xl">
+  <div class="flex items-center gap-3">${logo(defLogo,'w-12 h-12')}<div><h1 class="font-bold tracking-wider text-white">PIXELSPHERE</h1><p class="text-[10px] font-mono text-cyan-400 tracking-widest uppercase">Self-hosted photo sharing</p></div></div>
+  <div class="grid grid-cols-2 gap-1 p-1 rounded-xl bg-slate-900/80 text-sm">
+    <button onclick="mode='login';render()" class="py-2 rounded-lg ${!su?'bg-slate-700 text-white':'text-slate-400'}">Log in</button>
+    <button onclick="mode='signup';render()" class="py-2 rounded-lg ${su?'bg-slate-700 text-white':'text-slate-400'}">Sign up</button></div>
+  <form onsubmit="submitAuth(event)" class="space-y-3">
+    <input id="a-user" class="inp" placeholder="Username" autocomplete="username" autocapitalize="none" maxlength="20" required>
+    <input id="a-pw" type="password" class="inp" placeholder="Password" autocomplete="${su?'new-password':'current-password'}" required>
+    ${su?'<input id="a-pw2" type="password" class="inp" placeholder="Confirm password" autocomplete="new-password" required>':''}
+    <p id="a-err" class="text-xs text-rose-400 min-h-[1rem]"></p>
+    <button id="a-btn" class="btn w-full">${su?'Create account':'Log in'}</button>
+  </form>
+  <p class="text-[10px] text-slate-500 leading-relaxed">No email needed. Just a username and password.</p></div></div>`;
+}
+/* ---------- shell ---------- */
+function go(v){view=v;render();scrollTo(0,0)}
+function shell(inner){
+  const lg=me.logo||defLogo,on=v=>view===v;
+  const home='M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 00-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6';
+  const usr='M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z';
+  const link=(v,label,d)=>`<button onclick="go('${v}')" class="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-left ${on(v)?'bg-gradient-to-r from-purple-900/40 to-cyan-900/40 border border-cyan-500/30 text-white':'text-slate-400 hover:text-white hover:bg-slate-800/40'}"><svg class="w-5 h-5 ${on(v)?'text-cyan-400':''}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="${d}"/></svg>${label}</button>`;
+  $('#app').innerHTML=`<div class="flex min-h-screen max-w-[1400px] mx-auto">
+  <aside class="hidden md:flex flex-col w-64 lg:w-72 h-screen sticky top-0 border-r border-slate-800/80 p-5 nav justify-between">
+    <div class="space-y-6"><div class="flex items-center gap-3 px-2">${logo(lg)}<div><h1 class="font-bold tracking-wider text-base text-white">PIXELSPHERE</h1><p class="text-[10px] font-mono text-cyan-400 tracking-widest uppercase">Node: 01 // Local</p></div></div>
+    <nav class="space-y-1">${link('feed','Feed',home)}${link('me','Profile & Settings',usr)}</nav></div>
+    <div class="flex items-center gap-3 p-2 rounded-xl bg-slate-900/50 border border-slate-800/60">${av(me)}<div class="flex-1 min-w-0"><p class="text-xs font-semibold text-white truncate">${esc(me.name)}</p><p class="text-[10px] text-slate-400 truncate font-mono">@${esc(me.username)}</p></div><button onclick="logout()" class="text-slate-400 hover:text-rose-400 text-xs">Exit</button></div>
+  </aside>
+  <main class="flex-1 min-w-0 pb-24 md:pb-10">
+    <header class="md:hidden flex items-center justify-between p-3 border-b border-slate-800 nav"><div class="flex items-center gap-2.5">${logo(lg,'w-8 h-8')}<span class="font-bold text-sm tracking-wide">PIXELSPHERE</span></div><button onclick="logout()" class="text-[11px] font-mono text-slate-400">Log out</button></header>
+    <div class="max-w-2xl mx-auto p-4 space-y-6">${inner}</div></main>
+  <nav class="md:hidden fixed bottom-0 left-0 right-0 nav border-t border-slate-800 z-30 px-6 pt-2 flex justify-around items-center" style="padding-bottom:calc(.5rem + env(safe-area-inset-bottom,0px))">
+    <button onclick="go('feed')" class="p-2 ${on('feed')?'text-cyan-400':'text-slate-400'}"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="${home}"/></svg></button>
+    <button onclick="go('me')" class="p-2">${av(me,'w-7 h-7 rounded-full')}</button></nav></div>`;
+}
+/* ---------- feed ---------- */
+function postCard(p){
+  const a=p.user,mine=a.username===me.username;
+  return `<article class="glass rounded-2xl overflow-hidden shadow-xl shadow-black/40">
+  <div class="p-4 flex items-center justify-between"><button onclick="go('u:${esc(a.username)}')" class="flex items-center gap-3 text-left">${av(a)}<div><h3 class="text-sm font-semibold text-white">${esc(a.name)}</h3><p class="text-[10px] font-mono text-cyan-400">@${esc(a.username)} • ${ago(p.ts)}</p></div></button>
+  ${mine?`<button onclick="delPost('${p.id}')" class="text-[11px] text-slate-500 hover:text-rose-400">Delete</button>`:''}</div>
+  <img src="${esc(p.img)}" loading="lazy" class="w-full aspect-square object-cover bg-slate-950" alt="">
+  <div class="p-4 space-y-2"><button onclick="like('${p.id}')" class="flex items-center gap-1.5 ${p.liked?'text-rose-400':'text-slate-300 hover:text-cyan-400'}"><svg class="w-6 h-6" fill="${p.liked?'currentColor':'none'}" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/></svg><span class="text-xs font-mono">${p.likes}</span></button>
+  ${p.text?`<p class="text-xs text-slate-300 leading-relaxed whitespace-pre-wrap"><span class="font-semibold text-white">${esc(a.username)}</span> ${esc(p.text)}</p>`:''}</div></article>`;
+}
+function feedView(list){
+  return `<div class="glass rounded-2xl p-4 space-y-3">
+  <label for="pick" class="${pendingImg?'hidden':'flex'} aspect-[2/1] flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-cyan-500/40 bg-cyan-950/20 text-cyan-300 text-sm cursor-pointer hover:border-cyan-400"><svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 16l5-5 4 4 3-3 6 6M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1zm11-11h.01"/></svg>Choose a photo to share</label>
+  <input id="pick" type="file" accept="image/*" class="hidden" onchange="pickPostImg(this)">
+  <div class="${pendingImg?'':'hidden'} relative"><img src="${pendingImg||''}" class="rounded-xl w-full aspect-square object-cover"><button onclick="pendingImg=null;render()" class="absolute top-2 right-2 w-8 h-8 rounded-full bg-black/60 text-white">&times;</button></div>
+  <div class="flex gap-3">${av(me)}<textarea id="cap" rows="2" maxlength="500" class="inp" placeholder="Write a caption…"></textarea></div>
+  <button id="share" onclick="publish()" class="btn w-full">Share</button></div>
+  ${list.map(postCard).join('')||'<p class="text-center text-sm text-slate-500 py-10">No photos yet. Share the first one.</p>'}`;
+}
+async function pickPostImg(i){const f=i.files[0];if(!f)return;try{const t=$('#cap')?.value||'';pendingImg=await fitImage(f);await render();$('#cap').value=t}catch(e){toast('Couldn’t read that image')}}
+async function publish(){
+  if(!pendingImg){toast('Pick a photo first');return}
+  $('#share').disabled=true;
+  try{await api('POST','/api/posts',{image:pendingImg,text:$('#cap').value});pendingImg=null;render()}
+  catch(e){toast(e.message);$('#share').disabled=false}
+}
+async function delPost(id){if(!confirm('Delete this post?'))return;try{await api('DELETE','/api/posts/'+id);render()}catch(e){toast(e.message)}}
+async function like(id){try{await api('POST','/api/posts/'+id+'/like');const y=scrollY;await render();scrollTo(0,y)}catch(e){toast(e.message)}}
+/* ---------- profiles ---------- */
+function header(u,posts){
+  return `<div class="glass rounded-2xl p-5 space-y-4"><div class="flex items-center gap-5">${av(u,'w-20 h-20 rounded-full text-2xl')}<div class="min-w-0"><h2 class="font-bold text-white truncate">${esc(u.name)}</h2><p class="text-xs font-mono text-cyan-400">@${esc(u.username)}</p><p class="text-xs text-slate-400 mt-1"><span class="text-white font-semibold">${posts.length}</span> posts</p></div></div>
+  ${u.bio?`<p class="text-xs text-slate-300 whitespace-pre-wrap">${esc(u.bio)}</p>`:''}
+  <div class="grid grid-cols-3 gap-1 rounded-xl overflow-hidden">${posts.map(p=>`<img src="${esc(p.img)}" loading="lazy" class="aspect-square object-cover w-full" alt="">`).join('')}</div></div>`;
+}
+function editView(posts){
+  const lg=me.logo||defLogo,shown=draftAvatar!==null?{...me,avatar:draftAvatar}:me;
+  return header(me,posts)+`<div class="glass rounded-2xl p-5 space-y-5"><h2 class="font-bold text-white">Edit profile</h2>
+  <div class="flex items-center gap-4"><div id="pv">${av(shown,'w-20 h-20 rounded-2xl text-2xl')}</div>
+   <div class="space-y-2"><label class="ghost cursor-pointer inline-block">Upload picture<input type="file" accept="image/*" class="hidden" onchange="pickAvatar(this)"></label>
+   <button onclick="removeAvatar()" class="ghost block">Remove</button></div></div>
+  <div><label class="block text-xs font-mono text-slate-400 mb-1">Display name</label><input id="p-name" class="inp" maxlength="40" value="${esc(me.name)}"></div>
+  <div><label class="block text-xs font-mono text-slate-400 mb-1">Username</label><input id="p-user" class="inp" maxlength="20" autocapitalize="none" value="${esc(me.username)}"></div>
+  <div><label class="block text-xs font-mono text-slate-400 mb-1">Bio</label><textarea id="p-bio" rows="3" maxlength="160" class="inp">${esc(me.bio)}</textarea></div>
+  <div><label class="block text-xs font-mono text-slate-400 mb-1">Logo colors</label><div class="flex gap-3"><input type="color" id="p-c1" value="${lg.start}" class="h-9 w-16 bg-slate-900 rounded-lg"><input type="color" id="p-c2" value="${lg.end}" class="h-9 w-16 bg-slate-900 rounded-lg"></div></div>
+  <p id="p-err" class="text-xs text-rose-400 min-h-[1rem]"></p><button onclick="saveProfile()" class="btn w-full">Save profile</button></div>
+  <div class="glass rounded-2xl p-5 space-y-3"><h2 class="font-bold text-white">Change password</h2>
+  <input id="cp-old" type="password" class="inp" placeholder="Current password" autocomplete="current-password">
+  <input id="cp-new" type="password" class="inp" placeholder="New password (8+ characters)" autocomplete="new-password">
+  <p id="cp-err" class="text-xs text-rose-400 min-h-[1rem]"></p><button onclick="changePw()" class="ghost">Update password</button></div>
+  <div class="glass rounded-2xl p-5 flex items-center justify-between"><div><h2 class="font-bold text-white text-sm">Delete account</h2><p class="text-xs text-slate-500">Removes your profile and photos permanently.</p></div><button onclick="delAccount()" class="ghost !border-rose-500/50 !text-rose-300">Delete</button></div>`;
+}
+async function pickAvatar(i){const f=i.files[0];if(!f)return;try{draftAvatar=await squareAvatar(f);$('#pv').innerHTML=av({avatar:draftAvatar},'w-20 h-20 rounded-2xl')}catch(e){toast('Couldn’t read that image')}}
+function removeAvatar(){draftAvatar='';$('#pv').innerHTML=av({...me,avatar:''},'w-20 h-20 rounded-2xl text-2xl')}
+async function saveProfile(){
+  const err=$('#p-err');err.textContent='';
+  try{const d=await api('PUT','/api/profile',{name:$('#p-name').value,username:$('#p-user').value,bio:$('#p-bio').value,logo:{start:$('#p-c1').value,end:$('#p-c2').value},avatar:draftAvatar});
+    me=d.me;draftAvatar=null;toast('Profile saved');render()}catch(e){err.textContent=e.message}
+}
+async function changePw(){
+  const err=$('#cp-err');err.textContent='';
+  try{await api('POST','/api/password',{old:$('#cp-old').value,new:$('#cp-new').value});$('#cp-old').value=$('#cp-new').value='';toast('Password updated')}catch(e){err.textContent=e.message}
+}
+async function delAccount(){
+  const pw=prompt('This permanently deletes your account and photos. Enter your password to confirm:');if(!pw)return;
+  try{await api('DELETE','/api/account',{password:pw});me=null;mode='login';render()}catch(e){toast(e.message)}
+}
+/* ---------- router ---------- */
+async function render(){
+  if(!me){authView();return}
+  try{
+    let html;
+    if(view==='feed')html=feedView((await api('GET','/api/posts')).posts);
+    else if(view==='me')html=editView((await api('GET','/api/posts?user='+me.username)).posts);
+    else{const d=await api('GET','/api/users/'+view.slice(2));html=header(d.user,d.posts)+`<button onclick="go('feed')" class="ghost">← Back to feed</button>`}
+    if(me)shell(html);
+  }catch(e){if(me){toast(e.message);if(view!=='feed'){view='feed';render()}}}
+}
+(async()=>{try{me=(await api('GET','/api/me')).me}catch(e){}render()})();
+</script>
+</body>
+</html>
